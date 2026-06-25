@@ -10,7 +10,7 @@ Environment overrides:
   SCHEDULE_DIR   root directory for schedule files
                  (default ~/.opencode/schedules)
   OPENCODE_BIN   absolute path to the opencode binary
-                 (default /home/zimmerer/.opencode/bin/opencode)
+                  (default ~/.opencode/bin/opencode)
   RUNNER_LOG     path to append log output to
                  (default ~/.opencode/runner.log)
   RUNNER_LOCK    path to the run lock file
@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 SCHEDULE_DIR = Path(os.environ.get("SCHEDULE_DIR", "~/.opencode/schedules")).expanduser()
-OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "/home/zimmerer/.opencode/bin/opencode")
+OPENCODE_BIN = os.environ.get("OPENCODE_BIN", os.path.expanduser("~/.opencode/bin/opencode"))
 LOG_PATH = Path(os.environ.get("RUNNER_LOG", "~/.opencode/runner.log")).expanduser()
 LOCK_PATH = Path(os.environ.get("RUNNER_LOCK", "~/.opencode/runner.lock")).expanduser()
 

@@ -66,7 +66,7 @@ re-invoked, the message is the entire context. Spell out:
 - What "done" looks like, so the wakeup can decide to clean up after itself.
 
 Bad: `"check the run"`. Good: `"cat
-/home/zimmerer/ws/sciantist/outputs/.../run_000003/train.log | tail -80;
+~/project/outputs/.../run_000003/train.log | tail -80;
 report last seg_dice EMA, last I→T R@5, last T→I R@5, and whether the run is
 still RUNNING via bjobs; if FINISHED, remove this schedule."`.
 

@@ -46,7 +46,7 @@ Or get richer context:
 
 ```json
 {
-  "cwd": "/home/zimmerer",
+  "cwd": "/home/user",
   "id": "ses_101f49f6effevpFstOIJ1Cx2jf",
   "opencode_pid": 1153824,
   "source": "opencode-db",
