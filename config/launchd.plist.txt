@@ -15,9 +15,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/USERNAME/.opencode/bin:/Users/USERNAME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>OPENCODE_BIN</key>
-        <string>/Users/USERNAME/.opencode/bin/opencode</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 
     <key>StandardOutPath</key>

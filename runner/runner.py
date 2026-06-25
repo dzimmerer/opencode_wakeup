@@ -9,8 +9,10 @@ advanced by ``minutes``.
 Environment overrides:
   SCHEDULE_DIR   root directory for schedule files
                  (default ~/.opencode/schedules)
-  OPENCODE_BIN   absolute path to the opencode binary
-                  (default ~/.opencode/bin/opencode)
+   OPENCODE_BIN   absolute path to the opencode binary
+                  (default: shutil.which(\"opencode\"), then
+                  /opt/homebrew/bin/opencode on macOS,
+                  lastly ~/.opencode/bin/opencode)
   RUNNER_LOG     path to append log output to
                  (default ~/.opencode/runner.log)
   RUNNER_LOCK    path to the run lock file
@@ -21,13 +23,26 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+
+def _default_opencode_bin() -> str:
+    exe = shutil.which("opencode")
+    if exe:
+        return exe
+    if sys.platform == "darwin":
+        for p in ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode"]:
+            if os.path.isfile(p):
+                return p
+    return os.path.expanduser("~/.opencode/bin/opencode")
+
+
 SCHEDULE_DIR = Path(os.environ.get("SCHEDULE_DIR", "~/.opencode/schedules")).expanduser()
-OPENCODE_BIN = os.environ.get("OPENCODE_BIN", os.path.expanduser("~/.opencode/bin/opencode"))
+OPENCODE_BIN = os.environ.get("OPENCODE_BIN") or _default_opencode_bin()
 LOG_PATH = Path(os.environ.get("RUNNER_LOG", "~/.opencode/runner.log")).expanduser()
 LOCK_PATH = Path(os.environ.get("RUNNER_LOCK", "~/.opencode/runner.lock")).expanduser()
 
