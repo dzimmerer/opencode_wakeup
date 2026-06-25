@@ -2,17 +2,22 @@
 # install.sh — Idempotent installer for opencode-wakeup.
 #
 # Usage:
-#   ./install.sh              # copy skills + AGENTS.md + runner, show instructions
-#   ./install.sh --crontab    # also install the crontab entry (interactive)
-#   ./install.sh --help       # show this message
+#   ./install.sh                        # copy skills + AGENTS.md + runner, show instructions
+#   ./install.sh --crontab              # install cron entry (Linux, interactive)
+#   ./install.sh --launchd              # install launchd plist (macOS, interactive)
+#   ./install.sh --help                 # show this message
+#
+# Platform detection:
+#   Linux: cron (via crontab)
+#   macOS: launchd (via launchctl)
 #
 # Everything goes under:
 #   ~/.config/opencode/skills/    ← skills
 #   ~/.config/opencode/AGENTS.md  ← global instructions
-#   ~/.opencode/runner.py         ← cron runner
+#   ~/.opencode/runner.py         ← runner
 #
-# Safe to run multiple times — existing files are overwritten, crontab is
-# updated in place (old runner entry is removed, new one appended).
+# Safe to run multiple times — existing files are overwritten, crontab/launchd
+# entries are replaced in place.
 
 set -euo pipefail
 
@@ -21,7 +26,19 @@ SKILLS_TARGET="$HOME/.config/opencode/skills"
 AGENTS_TARGET="$HOME/.config/opencode/AGENTS.md"
 RUNNER_TARGET="$HOME/.opencode/runner.py"
 CONFIG_TARGET="$HOME/.config/opencode/opencode.json"
-CRONTAB_TEMPLATE="$REPO_DIR/config/crontab.txt"
+
+# Platform detection
+OS="$(uname -s)"
+LAUNCHD_PLIST_LABEL="com.opencode.wakeup.runner"
+LAUNCHD_PLIST_DST="$HOME/Library/LaunchAgents/${LAUNCHD_PLIST_LABEL}.plist"
+
+if [ "$OS" = "Darwin" ]; then
+    CRONTAB_TEMPLATE=""
+    LAUNCHD_TEMPLATE="$REPO_DIR/config/launchd.plist.txt"
+else
+    CRONTAB_TEMPLATE="$REPO_DIR/config/crontab.txt"
+    LAUNCHD_TEMPLATE=""
+fi
 
 usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# //; s/^#//'
@@ -38,6 +55,7 @@ for arg; do
   case "$arg" in
     --help|-h) usage ;;
     --crontab) CRONTAB=1 ;;
+    --launchd) LAUNCHD=1 ;;
     *) warn "unknown flag: $arg"; usage ;;
   esac
 done
@@ -88,36 +106,70 @@ else
   echo ""
 fi
 
-# ── Crontab ──────────────────────────────────────────────────────────
-header "· crontab"
-if [ "${CRONTAB:-0}" = "1" ]; then
-  echo ""
-  info "The following entry will be added to your crontab:"
-  TMP_ENTRY=$(mktemp)
-  sed "s|<USER_HOME>|$USER|g" "$CRONTAB_TEMPLATE" > "$TMP_ENTRY"
-  echo ""
-  grep -v '^\s*#' "$TMP_ENTRY"
-  echo ""
-  read -rp "Proceed? [y/N] " ans
-  if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-    (
-      crontab -l 2>/dev/null \
-        | grep -v "$RUNNER_TARGET" \
-        | grep -v '^PATH=' \
-        || true
-      cat "$TMP_ENTRY"
-    ) | crontab -
-    ok "crontab updated"
+# ── Scheduler (cron / launchd) ──────────────────────────────────────
+if [ "$OS" = "Darwin" ]; then
+
+  header "· launchd → $LAUNCHD_PLIST_DST"
+  if [ "${LAUNCHD:-0}" = "1" ]; then
+    echo ""
+    info "The following launchd plist will be installed:"
+    TMP_PLIST=$(mktemp)
+    sed "s|USERNAME|$USER|g" "$LAUNCHD_TEMPLATE" > "$TMP_PLIST"
+    echo ""
+    grep -v '^\s*#' "$TMP_PLIST" | grep -v '^$'
+    echo ""
+    read -rp "Proceed? [y/N] " ans
+    if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+      mkdir -p "$(dirname "$LAUNCHD_PLIST_DST")"
+      cp "$TMP_PLIST" "$LAUNCHD_PLIST_DST"
+      launchctl unload "$LAUNCHD_PLIST_DST" 2>/dev/null || true
+      launchctl load "$LAUNCHD_PLIST_DST"
+      ok "launchd plist installed and loaded ($LAUNCHD_PLIST_LABEL)"
+    else
+      info "skipped"
+    fi
+    rm -f "$TMP_PLIST"
   else
-    info "skipped"
+    echo ""
+    info "pass --launchd to install the launchd plist (or do it manually):"
+    echo ""
+    sed "s|USERNAME|$USER|g" "$LAUNCHD_TEMPLATE"
+    echo ""
   fi
-  rm -f "$TMP_ENTRY"
+
 else
-  echo ""
-  info "pass --crontab to install the cron entry (or do it manually):"
-  echo ""
-  sed "s|<USER_HOME>|$USER|g" "$CRONTAB_TEMPLATE"
-  echo ""
+
+  header "· crontab"
+  if [ "${CRONTAB:-0}" = "1" ]; then
+    echo ""
+    info "The following entry will be added to your crontab:"
+    TMP_ENTRY=$(mktemp)
+    sed "s|<USER_HOME>|$USER|g" "$CRONTAB_TEMPLATE" > "$TMP_ENTRY"
+    echo ""
+    grep -v '^\s*#' "$TMP_ENTRY"
+    echo ""
+    read -rp "Proceed? [y/N] " ans
+    if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+      (
+        crontab -l 2>/dev/null \
+          | grep -v "$RUNNER_TARGET" \
+          | grep -v '^PATH=' \
+          || true
+        cat "$TMP_ENTRY"
+      ) | crontab -
+      ok "crontab updated"
+    else
+      info "skipped"
+    fi
+    rm -f "$TMP_ENTRY"
+  else
+    echo ""
+    info "pass --crontab to install the cron entry (or do it manually):"
+    echo ""
+    sed "s|<USER_HOME>|$USER|g" "$CRONTAB_TEMPLATE"
+    echo ""
+  fi
+
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────
@@ -127,5 +179,10 @@ echo "  1. If opencode.json was edited, quit and restart opencode."
 echo "  2. Verify:"
 echo "       ~/.config/opencode/skills/schedule-wakeup/scripts/schedule_wakeup.py list"
 echo "       ~/.config/opencode/skills/get-session-id/scripts/get_session_id.py"
-echo "       /usr/bin/python3 $RUNNER_TARGET && tail ~/.opencode/runner.log"
+if [ "$OS" = "Darwin" ]; then
+  echo "       /usr/bin/python3 $RUNNER_TARGET && cat ~/.opencode/runner.log"
+  echo "  3. Launchd status: launchctl list | grep $LAUNCHD_PLIST_LABEL"
+else
+  echo "       /usr/bin/python3 $RUNNER_TARGET && tail ~/.opencode/runner.log"
+fi
 echo ""

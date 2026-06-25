@@ -14,7 +14,7 @@ Two opencode skills plus a cron-driven runner. The skills let any chat identify 
 - **Schedule one-shot wakeups** ("check back in 30 minutes when the training run finishes").
 - **Schedule recurring wakeups** ("poll `bjobs` every 5 minutes until the job is done").
 - **Inspect / cancel** scheduled wakeups at any time.
-- **Cron runner** fires due wakeups automatically (one-shot → delete, interval → advance + keep).
+- **Cron/launchd runner** fires due wakeups automatically (one-shot → delete, interval → advance + keep). Linux uses cron; macOS uses launchd.
 - **Safe from shell injection** — prompt content is passed as positional arguments via subprocess list-form, never via shell string interpolation.
 - **No network dependencies** — all scripts are stdlib-only Python 3.
 
@@ -37,10 +37,10 @@ Two opencode skills plus a cron-driven runner. The skills let any chat identify 
   └──────────┘  └────────┬──────────┘
                          │
                          ▼
-                  ┌──────────────┐
-                  │  cron runner  │  ← runs every minute
-                  │  runner.py    │
-                  └───────┬──────┘
+                   ┌──────────────┐
+                   │  cron/launchd │  ← runs every 60s
+                   │  runner.py    │
+                   └───────┬──────┘
                           │
                           ▼
                   ┌────────────────┐
@@ -51,7 +51,7 @@ Two opencode skills plus a cron-driven runner. The skills let any chat identify 
 ```
 
 1. The chat (via the `schedule-wakeup` skill) writes a JSON file to `~/.opencode/schedules/<session_id>/<wakeup_id>.json` with the target time, prompt, and type.
-2. The cron runner (`runner.py`) polls these files every minute. When `next_wakeup` has passed, it invokes `opencode run -s <session_id> -- "<prompt>"`.
+2. The runner (`runner.py`) polls these files every 60 seconds (via cron on Linux or launchd on macOS). When `next_wakeup` has passed, it invokes `opencode run -s <session_id> -- "<prompt>"`.
 3. One-shot files are deleted after firing; interval files get their `next_wakeup` advanced by `minutes` and stay in place.
 
 ---
@@ -78,7 +78,8 @@ opencode_wakeup/
 │   └── runner.py                      ← cron runner that fires due schedules
 └── config/
     ├── opencode.json                  ← snippet to merge into global opencode.json
-    └── crontab.txt                    ← crontab entry template
+    ├── crontab.txt                    ← crontab entry template (Linux)
+    └── launchd.plist.txt              ← launchd plist template (macOS)
 ```
 
 ---
@@ -87,8 +88,8 @@ opencode_wakeup/
 
 - **opencode** ≥ 1.17 (tested on 1.17.9)
 - **Python 3** ≥ 3.8 (stdlib only)
-- **bash**, **cron** (Linux) or **launchd** (macOS — adapt `crontab.txt` if needed)
-- `/proc` filesystem on Linux (for session ID detection via parent process; falls back to `lsof` on macOS)
+- **Linux:** cron (typically pre-installed), `/proc` filesystem (for session ID detection)
+- **macOS:** launchd (built-in), `lsof` (pre-installed) for session ID fallback
 
 ---
 
@@ -105,9 +106,12 @@ cd opencode-wakeup
 # 3. Add "instructions" to your global opencode.json
 #    (the installer tells you how — follow the prompt)
 
-# 4. Install the crontab entry (optional — the runner needs it for
+# 4. Install the scheduler (optional — the runner needs it for
 #    automatic wakeup firing)
+#    Linux:
 ./install.sh --crontab
+#    macOS:
+./install.sh --launchd
 
 # 5. Quit opencode and restart it for the config change to take effect.
 ```
@@ -162,22 +166,36 @@ Merge this with your existing global config. The `instructions` field adds the f
 
 **After editing, quit and restart opencode.** Config is loaded only at startup.
 
-### 3. Install the cron runner
+### 3. Install the runner scheduler
 
-The runner (`runner.py`) scans `~/.opencode/schedules/` every minute for due wakeups. Install it with:
+The runner (`runner.py`) scans `~/.opencode/schedules/` every 60 seconds for due wakeups. Install it with:
 
+**Linux (cron):**
 ```bash
 ./install.sh --crontab
 ```
 
-Or manually add to your crontab (`crontab -e`):
-
+Or manually (`crontab -e`):
 ```
 PATH=/home/<user>/.opencode/bin:/home/<user>/.local/bin:/usr/bin:/bin
 * * * * * /usr/bin/python3 /home/<user>/.opencode/runner.py >> /home/<user>/.opencode/runner.log 2>&1
 ```
 
 The `PATH=` is critical: cron's default `PATH` is `/usr/bin:/bin`, but the opencode binary lives at `~/.opencode/bin/opencode`. Without the override, the runner can't find opencode.
+
+**macOS (launchd):**
+```bash
+./install.sh --launchd
+```
+
+Or manually place the matching plist at `~/Library/LaunchAgents/com.opencode.wakeup.runner.plist` (see `config/launchd.plist.txt`), then:
+```bash
+launchctl load ~/Library/LaunchAgents/com.opencode.wakeup.runner.plist
+```
+
+The plist sets `PATH` and runs the runner every 60 seconds via `StartInterval`. Check status with `launchctl list | grep opencode`.
+
+> **Note:** On macOS, `cron` is deprecated. This project uses `launchd` instead, which is the native Apple-approved job scheduler. The plist template includes the necessary `PATH` and environment overrides.
 
 ### 4. Verify
 
@@ -346,12 +364,13 @@ Every tick writes a timestamped line to `RUNNER_LOG`:
 
 ### "Session ID not found"
 - If your opencode setup does NOT use `~/.local/share/opencode/opencode.db` (e.g. custom XDG paths), the DB lookup will fail. Pass `--session ses_xxx` explicitly or set `$OPENCODE_SESSION_ID`.
-- On macOS, `/proc` is unavailable; the script falls back to `lsof`. Install `lsof` if not already present.
+- On macOS, `/proc` is unavailable; the script falls back to `lsof`. Install `lsof` if not already present (`brew install lsof` or it is usually pre-installed).
 
 ### Schedule file is written but wakeup never fires
-- Check the cron runner log: `tail -20 ~/.opencode/runner.log`
-- Verify the crontab is running: `crontab -l | grep runner`
-- Verify `PATH` in the crontab includes `~/.opencode/bin` (the opencode binary).
+- Check the runner log: `tail -20 ~/.opencode/runner.log`
+- **Linux:** Verify the crontab is active: `crontab -l | grep runner`
+- **macOS:** Verify launchd is loaded: `launchctl list | grep opencode`. Check logs: `log show --predicate 'process == "runner.py"' --last 1h`.
+- Verify `PATH` includes `~/.opencode/bin` (or wherever `opencode` is installed). On macOS, the launchd plist template already sets `PATH`.
 - Manually run the runner: `python3 ~/.opencode/runner.py` and check the log.
 
 ### `opencode run` fails in the runner
