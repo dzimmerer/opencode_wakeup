@@ -14,7 +14,7 @@ Two opencode skills plus a cron-driven runner. The skills let any chat identify 
 - **Schedule one-shot wakeups** ("check back in 30 minutes when the training run finishes").
 - **Schedule recurring wakeups** ("poll `bjobs` every 5 minutes until the job is done").
 - **Inspect / cancel** scheduled wakeups at any time.
-- **Cron/launchd runner** fires due wakeups automatically (one-shot → delete, interval → advance + keep). Linux uses cron; macOS uses launchd.
+- **Cron/launchd runner** fires due wakeups automatically (one-shot → delete, interval → advance + keep). Linux uses cron; macOS uses launchd. The 60-second tick is non-blocking: each due wakeup is dispatched to a dedicated worker process (multiprocessing, spawn context), so a slow `opencode run` cannot stall the poll loop and multiple wakeups can run in parallel. Per-schedule single-flight is enforced by an atomic dispatch marker (`<id>.json.dispatch`). Failed runs re-arm to `now + RUNNER_RETRY_MINUTES` and retry up to `RUNNER_MAX_ATTEMPTS` times before the schedule is moved aside as `.bad`.
 - **Safe from shell injection** — prompt content is passed as positional arguments via subprocess list-form, never via shell string interpolation.
 - **No network dependencies** — all scripts are stdlib-only Python 3.
 
@@ -51,7 +51,7 @@ Two opencode skills plus a cron-driven runner. The skills let any chat identify 
 ```
 
 1. The chat (via the `schedule-wakeup` skill) writes a JSON file to `~/.opencode/schedules/<session_id>/<wakeup_id>.json` with the target time, prompt, and type.
-2. The runner (`runner.py`) polls these files every 60 seconds (via cron on Linux or launchd on macOS). When `next_wakeup` has passed, it invokes `opencode run -s <session_id> -- "<prompt>"`.
+2. The runner (`runner.py`) polls these files every 60 seconds (via cron on Linux or launchd on macOS). When `next_wakeup` has passed, it peeks at the file, atomically claims the schedule by creating `<id>.json.dispatch`, and spawns a dedicated worker process (multiprocessing spawn context) that invokes `opencode run -s <session_id> -- "<prompt>"`, waits up to `RUNNER_TIMEOUT` seconds, captures stdout/stderr to the log, and removes the dispatch marker. The parent tick is non-blocking and exits as soon as workers are dispatched. If another tick tries to dispatch the same schedule while a worker is in flight, it sees the marker and skips. On non-zero exit or timeout the schedule is re-armed (not dropped) and retried on a later tick.
 3. One-shot files are deleted after firing; interval files get their `next_wakeup` advanced by `minutes` and stay in place.
 
 ---
@@ -75,7 +75,7 @@ opencode_wakeup/
 │       └── scripts/
 │           └── schedule_wakeup.py     ← CLI to add/list/show/remove wakeups
 ├── runner/
-│   └── runner.py                      ← cron runner that fires due schedules
+│   └── runner.py                      ← tick dispatcher + per-wakeup worker processes (multiprocessing spawn)
 └── config/
     ├── opencode.json                  ← snippet to merge into global opencode.json
     ├── crontab.txt                    ← crontab entry template (Linux)
@@ -322,6 +322,12 @@ The agent handles `add`, `list`, `remove`, and cleanup automatically per the AGE
 | `OPENCODE_BIN` | `~/.opencode/bin/opencode` | Absolute path to the opencode binary |
 | `RUNNER_LOG` | `~/.opencode/runner.log` | Append-only log file |
 | `RUNNER_LOCK` | `~/.opencode/runner.lock` | Lock file for single-flight protection |
+| `RUNNER_TIMEOUT` | `300` | Per-wakeup timeout for the spawned `opencode run` (seconds) |
+| `RUNNER_RETRY_MINUTES` | `5` | Minutes to re-arm `next_wakeup` after a failed or timed-out run |
+| `RUNNER_MAX_ATTEMPTS` | `5` | After N failed attempts, the schedule is moved to `<id>.json.bad` |
+| `RUNNER_STDOUT_TAIL` | `4000` | How many trailing chars of stdout to capture in the log |
+| `RUNNER_STDERR_TAIL` | `4000` | How many trailing chars of stderr to capture in the log |
+| `RUNNER_CLAIM_TIMEOUT` | `3600` | Seconds before a stale `<id>.json.dispatch` marker is reaped (for crashed workers) |
 
 ### Log file
 
@@ -330,14 +336,29 @@ Every tick writes a timestamped line to `RUNNER_LOG`:
 ```
 [2026-06-25T12:00:00] triggering wakeup 'train_03' for session ses_xxx (type=once)
 [2026-06-25T12:00:00] FATAL: opencode binary not found at ... ; check OPENCODE_BIN / PATH
-[2026-06-25T12:00:00] opencode run failed (rc=1); leaving schedule in place. stderr=...
+[2026-06-25T12:00:00] dispatched worker pid 48253 for train_03.json
+[2026-06-25T12:00:00] skip train_03.json: another worker in flight (dispatch marker 17s old)
+[2026-06-25T12:00:00] stale dispatch marker for train_03.json (3700s old, threshold 3600s); removing
+[2026-06-25T12:00:00] opencode run ok for wakeup 'train_03' (rc=0, 1234B stdout, 5678B stderr)
+[2026-06-25T12:00:00]   stdout (tail):
+... [captured stdout] ...
+[2026-06-25T12:00:00] opencode run failed for wakeup 'train_03' (rc=1); will retry in 5min
+[2026-06-25T12:00:00]   stderr (tail):
+... [captured stderr] ...
+[2026-06-25T12:00:00] opencode run timed out after 300s for wakeup 'train_03'; will retry in 5min
+[2026-06-25T12:00:00] worker crashed on .../train_03.json: ValueError: bad prompt
+[2026-06-25T12:00:00] moved bad schedule ... -> ... .bad: opencode run failed 5 times; giving up
 [2026-06-25T12:00:00] moved bad schedule ... -> ... .bad: unreadable JSON: ...
 [2026-06-25T12:00:00] another runner is active; skipping this tick
 ```
 
 ### Lock file
 
-`runner.py` uses `fcntl.flock` on `RUNNER_LOCK` so that if a tick takes longer than 60 seconds (e.g. opencode run is slow), the next tick skips instead of double-firing. The lock is released on normal exit or `finally`.
+`runner.py` uses `fcntl.flock` on `RUNNER_LOCK` so that two parent ticks cannot run at the same time. Because the tick is non-blocking (it just dispatches workers and exits, usually in well under a second), the lock is rarely contended; the next tick acquires it as soon as the previous one releases. The lock is released on normal exit or `finally`.
+
+### Dispatch marker (per-wakeup single-flight)
+
+When the parent tick decides a schedule is due, it atomically creates `<id>.json.dispatch` next to the schedule JSON (using `O_CREAT | O_EXCL`) and spawns a dedicated worker. The worker removes the marker when it exits, success or failure. Any other tick that sees the marker within `RUNNER_CLAIM_TIMEOUT` seconds skips that schedule, ensuring at most one worker per schedule at a time even when the 60s tick and the worker are slow. Markers older than `RUNNER_CLAIM_TIMEOUT` (default 1h) are treated as stale (the previous worker is assumed to have crashed) and reaped before re-claiming.
 
 ### Schedule file format
 
@@ -349,14 +370,18 @@ Every tick writes a timestamped line to `RUNNER_LOG`:
   "type":        "once",
   "minutes":     30,
   "next_wakeup": "2026-06-25T12:30:00",
+  "attempts":    0,
+  "last_error":  null,
   "created_at":  "2026-06-25T12:00:00"
 }
 ```
 
 - `type: "once"` → runner deletes the file after firing.
-- `type: "interval"` → runner advances `next_wakeup` to `now + minutes` after firing.
+- `type: "interval"` → runner advances `next_wakeup` to `now + minutes` after a successful run. Failed interval runs re-arm to `now + RUNNER_RETRY_MINUTES` (not `minutes`) and stay on the retry interval until the run succeeds.
+- On failure, the runner writes `attempts` (int) and `last_error` (str) into the schedule JSON and re-arms `next_wakeup`. On success it clears both. After `attempts >= RUNNER_MAX_ATTEMPTS` the file is moved to `<id>.json.bad`.
 - `created_at` is informational (set by `schedule_wakeup.py add`, ignored by the runner).
 - Times are naive local time (no timezone). The runner and cron must run in the same timezone.
+- A sibling `<id>.json.dispatch` (empty file) is created by the dispatcher and removed by the worker; it is not part of the schedule contract and should not be edited by hand.
 
 ---
 
@@ -374,8 +399,15 @@ Every tick writes a timestamped line to `RUNNER_LOG`:
 - Manually run the runner: `python3 ~/.opencode/runner.py` and check the log.
 
 ### `opencode run` fails in the runner
-- The runner passes `OPENCODE_YOLO=true` to the spawned `opencode run` to skip permission prompts. If your config has explicit `deny` rules that block parts of the prompt, the run may fail. Check the runner log for the `stderr=` line.
+- The runner passes `OPENCODE_YOLO=true` to the spawned `opencode run` to skip permission prompts. If your config has explicit `deny` rules that block parts of the prompt, the run may fail. The runner waits for the run to complete and logs the captured stdout (up to `RUNNER_STDOUT_TAIL` chars) and stderr (up to `RUNNER_STDERR_TAIL` chars) right after the `opencode run failed (rc=N)` line.
+- On failure, timeout, or launch error the schedule is **re-armed** to `now + RUNNER_RETRY_MINUTES` and the `attempts` counter in the schedule JSON is incremented. After `RUNNER_MAX_ATTEMPTS` failed tries the schedule is moved to `<id>.json.bad` so a permanently broken wakeup can't tight-loop the runner.
 - If the binary is not at the default path, set `OPENCODE_BIN` in the runner's environment.
+- A captured `stdout` of several KB is normal: `opencode run -s <session>` resumes the session, so the model sees the full conversation context and may produce a long response. If you don't want that in `RUNNER_LOG`, set `RUNNER_STDOUT_TAIL=0` (the line is still written; the tail is just empty).
+
+### Schedule is stuck (worker crashed or was killed)
+- The dispatcher leaves `<id>.json.dispatch` while a worker is in flight, and removes it when the worker exits. If the worker is killed (e.g. `SIGKILL` from a manual `pkill` or a process-group teardown), the marker is left behind and subsequent ticks will log `skip <file>: another worker in flight`.
+- After `RUNNER_CLAIM_TIMEOUT` (default 3600s = 1h) the dispatcher treats the marker as stale, removes it, and re-dispatches.
+- To unstick the schedule immediately, remove the marker by hand: `rm ~/.opencode/schedules/<sid>/<id>.json.dispatch`. The next tick (or `python3 ~/.opencode/runner.py`) will re-dispatch.
 
 ### AGENTS.md is loaded but the agent doesn't use the skills
 - The skills must be under `~/.config/opencode/skills/` (or another path in `skills.paths`). Confirm with:
