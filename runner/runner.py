@@ -10,8 +10,8 @@ Environment overrides:
   SCHEDULE_DIR   root directory for schedule files
                  (default ~/.opencode/schedules)
    OPENCODE_BIN   absolute path to the opencode binary
-                  (default: shutil.which(\"opencode\"), then
-                  /opt/homebrew/bin/opencode on macOS,
+                  (default: shutil.which("opencode"),
+                  then /opt/homebrew/bin/opencode on macOS,
                   lastly ~/.opencode/bin/opencode)
   RUNNER_LOG     path to append log output to
                  (default ~/.opencode/runner.log)
@@ -97,21 +97,20 @@ def _process(file_path: Path, now: datetime) -> None:
 
     _log(f"triggering wakeup {wakeup_id!r} for session {session_id} (type={kind})")
 
-    # List-form subprocess + shell=False -> no shell injection via prompt content.
+    # Spawn opencode run non-blocking. The schedule is consumed immediately
+    # (deleted for one-shot, advanced for interval) so the next tick won't
+    # re-fire it. The subprocess stdout/stderr is discarded; check the
+    # opencode UI or runner.log for the "triggering wakeup" line.
     cmd = [OPENCODE_BIN, "run", "-s", session_id, "--", prompt]
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             shell=False,
-            check=False,
             env={**os.environ, "OPENCODE_YOLO": "true"},
-            capture_output=True,
-            text=True,
-            timeout=300,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    except subprocess.TimeoutExpired:
-        _log(f"opencode run timed out after 300s; leaving schedule in place")
-        return
+        _log(f"spawned pid {proc.pid} for wakeup {wakeup_id!r}")
     except FileNotFoundError:
         _log(f"FATAL: opencode binary not found at {OPENCODE_BIN}; check OPENCODE_BIN / PATH")
         return
@@ -119,13 +118,7 @@ def _process(file_path: Path, now: datetime) -> None:
         _log(f"opencode launch failed: {e}")
         return
 
-    if result.returncode != 0:
-        _log(
-            f"opencode run failed (rc={result.returncode}); leaving schedule in place. "
-            f"stderr={(result.stderr or '').strip()[:500]}"
-        )
-        return
-
+    # Consume the schedule immediately regardless of subprocess outcome.
     if kind == "interval":
         data["next_wakeup"] = (now + timedelta(minutes=minutes)).isoformat()
         try:
