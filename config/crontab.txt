@@ -1,0 +1,9 @@
+# Crontab entry for the wakeup runner
+#
+# Replace <USER_HOME> with the actual home directory path.
+# Installed via: `crontab -e` or the install.sh script.
+
+PATH=/home/<USER_HOME>/.opencode/bin:/home/<USER_HOME>/.local/bin:/usr/bin:/bin
+
+* * * * * /usr/bin/python3 /home/<USER_HOME>/.opencode/runner.py \
+    >> /home/<USER_HOME>/.opencode/runner.log 2>&1
