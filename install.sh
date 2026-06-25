@@ -77,8 +77,14 @@ done
 
 # ── AGENTS.md ────────────────────────────────────────────────────────
 header "· global instructions → $AGENTS_TARGET"
-cp "$REPO_DIR/AGENTS.md" "$AGENTS_TARGET"
-ok "installed AGENTS.md"
+if [ -f "$AGENTS_TARGET" ]; then
+  printf '\n' >> "$AGENTS_TARGET"
+  cat "$REPO_DIR/AGENTS.md" >> "$AGENTS_TARGET"
+  ok "appended AGENTS.md to existing file"
+else
+  cp "$REPO_DIR/AGENTS.md" "$AGENTS_TARGET"
+  ok "installed AGENTS.md"
+fi
 
 # ── Runner ──────────────────────────────────────────────────────────
 header "· cron runner → $RUNNER_TARGET"
