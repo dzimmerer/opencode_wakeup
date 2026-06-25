@@ -92,7 +92,11 @@ def _process(file_path: Path, now: datetime) -> None:
             env={**os.environ, "OPENCODE_YOLO": "true"},
             capture_output=True,
             text=True,
+            timeout=300,
         )
+    except subprocess.TimeoutExpired:
+        _log(f"opencode run timed out after 300s; leaving schedule in place")
+        return
     except FileNotFoundError:
         _log(f"FATAL: opencode binary not found at {OPENCODE_BIN}; check OPENCODE_BIN / PATH")
         return
