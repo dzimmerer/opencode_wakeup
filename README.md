@@ -202,7 +202,7 @@ The plist sets `PATH` and runs the runner every 60 seconds via `StartInterval`. 
 ```bash
 # Skills loaded?
 ls ~/.config/opencode/skills/
-# → dkfz-cluster  get-session-id  schedule-wakeup
+# → get-session-id  schedule-wakeup
 
 # AGENTS.md loaded?
 grep instructions ~/.config/opencode/opencode.json
