@@ -285,11 +285,11 @@ def _process(file_path: Path, now: datetime) -> None:
             _log(f"  stdout (tail):\n{_tail_text(e.stdout, STDOUT_TAIL_CHARS)}")
         if e.stderr:
             _log(f"  stderr (tail):\n{_tail_text(e.stderr, STDERR_TAIL_CHARS)}")
-        _consume_or_rearm(file_path, data, now, kind, minutes, succeeded=False)
+        _consume_or_rearm(file_path, data, datetime.now(), kind, minutes, succeeded=False)
         return
     except OSError as e:
         _log(f"opencode launch failed for wakeup {wakeup_id!r}: {e}")
-        _consume_or_rearm(file_path, data, now, kind, minutes, succeeded=False)
+        _consume_or_rearm(file_path, data, datetime.now(), kind, minutes, succeeded=False)
         return
 
     if result.returncode == 0:
@@ -299,7 +299,7 @@ def _process(file_path: Path, now: datetime) -> None:
         )
         if result.stdout:
             _log(f"  stdout (tail):\n{_tail_text(result.stdout, STDOUT_TAIL_CHARS)}")
-        _consume_or_rearm(file_path, data, now, kind, minutes, succeeded=True)
+        _consume_or_rearm(file_path, data, datetime.now(), kind, minutes, succeeded=True)
     else:
         _log(
             f"opencode run failed for wakeup {wakeup_id!r} (rc={result.returncode}); "
@@ -309,7 +309,7 @@ def _process(file_path: Path, now: datetime) -> None:
             _log(f"  stdout (tail):\n{_tail_text(result.stdout, STDOUT_TAIL_CHARS)}")
         if result.stderr:
             _log(f"  stderr (tail):\n{_tail_text(result.stderr, STDERR_TAIL_CHARS)}")
-        _consume_or_rearm(file_path, data, now, kind, minutes, succeeded=False)
+        _consume_or_rearm(file_path, data, datetime.now(), kind, minutes, succeeded=False)
 
 
 def _cleanup_empty_dirs() -> None:
