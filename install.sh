@@ -78,9 +78,14 @@ done
 # ── AGENTS.md ────────────────────────────────────────────────────────
 header "· global instructions → $AGENTS_TARGET"
 if [ -f "$AGENTS_TARGET" ]; then
-  printf '\n' >> "$AGENTS_TARGET"
-  cat "$REPO_DIR/AGENTS.md" >> "$AGENTS_TARGET"
-  ok "appended AGENTS.md to existing file"
+  FIRST_LINE=$(head -n1 "$REPO_DIR/AGENTS.md")
+  if grep -Fqx "$FIRST_LINE" "$AGENTS_TARGET"; then
+    ok "AGENTS.md already contains the up-to-date content; skipping"
+  else
+    printf '\n' >> "$AGENTS_TARGET"
+    cat "$REPO_DIR/AGENTS.md" >> "$AGENTS_TARGET"
+    ok "appended AGENTS.md to existing file"
+  fi
 else
   cp "$REPO_DIR/AGENTS.md" "$AGENTS_TARGET"
   ok "installed AGENTS.md"
